@@ -88,8 +88,21 @@ main() {
     local lease
     lease="$(get_client_ipv4 || true)"
     [[ -n "${lease}" ]] || die "Client has no IPv4 lease."
-    ipv4_in_range "${lease}" "${CLIENT_POOL_START}" "${CLIENT_POOL_END}" ||
-        die "Lease ${lease} is outside configured pool."
+
+    local pool_matched=0
+    if ipv4_in_range "${lease}" "${CLIENT_POOL_START}" "${CLIENT_POOL_END}"; then
+        pool_matched=1
+    elif [[ -n "${CLIENT2_POOL_START:-}" && -n "${CLIENT2_POOL_END:-}" ]] &&
+         ipv4_in_range "${lease}" "${CLIENT2_POOL_START}" "${CLIENT2_POOL_END}"; then
+        pool_matched=1
+    fi
+
+    if (( pool_matched == 0 )); then
+        die "Lease ${lease} is outside configured pools (${CLIENT_POOL_START}..${CLIENT_POOL_END} or ${CLIENT2_POOL_START:-}..${CLIENT2_POOL_END:-})."
+    fi
+
+    log_info "Phase 3b: validate DHCP lease renewal"
+    "${SCRIPT_DIR}/client_renew.sh"
 
     log_info "Phase 4: stop capture before analysis"
     if (( CAPTURE_STARTED == 1 )); then
@@ -101,6 +114,8 @@ main() {
     log_info "Phase 5: verify packet evidence"
     if [[ "${START_CAPTURE_AUTOMATICALLY:-1}" == "1" ]]; then
         "${SCRIPT_DIR}/verify_capture.sh"
+        printf '\n'
+        "${SCRIPT_DIR}/verify_renew.sh"
     else
         log_warn "Automatic capture disabled; packet verification skipped."
     fi

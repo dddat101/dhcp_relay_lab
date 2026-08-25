@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-# Request a DHCP lease from the LAN-side namespace.
+# Trigger a DHCP lease renewal from the LAN client without resetting the interface.
 
 set -Eeuo pipefail
 IFS=$'\n\t'
 
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 # shellcheck source=lib/common.sh
 source "${SCRIPT_DIR}/lib/common.sh"
 
@@ -35,17 +36,11 @@ select_client() {
     esac
 }
 
-clear_client_address() {
-    ip -n "${NS_CLIENT}" addr flush dev "${NS_CLIENT_IF}"
-}
-
-run_dhclient() {
+renew_dhclient() {
     local leasefile="/var/lib/dhcp/dhclient-${NS_CLIENT}.leases"
     local pidfile="/run/dhclient-${NS_CLIENT}.pid"
 
-    install -d -m 0755 /var/lib/dhcp /run
-    rm -f "${leasefile}" "${pidfile}"
-    : > "${leasefile}"
+    log_info "Triggering DHCP renewal via dhclient..."
 
     timeout "${DHCP_TIMEOUT_SEC}" \
         ip netns exec "${NS_CLIENT}" \
@@ -58,17 +53,28 @@ run_dhclient() {
         "${NS_CLIENT_IF}"
 }
 
-run_udhcpc() {
+renew_udhcpc() {
     local udhcpc_script="${SCRIPT_DIR}/lib/udhcpc.script"
+    local pidfile="/run/udhcpc-${NS_CLIENT}.pid"
 
-    timeout "${DHCP_TIMEOUT_SEC}" \
-        ip netns exec "${NS_CLIENT}" \
-        "${UDHCPC_BIN:-udhcpc}" \
-        -f \
-        -q \
-        -n \
-        -i "${NS_CLIENT_IF}" \
-        -s "${udhcpc_script}"
+    log_info "Triggering DHCP renewal via udhcpc..."
+
+    if [[ -f "${pidfile}" ]] && kill -0 "$(cat "${pidfile}" 2>/dev/null)" 2>/dev/null; then
+        local pid
+        pid="$(cat "${pidfile}")"
+        log_info "Sending SIGUSR1 to running udhcpc (PID ${pid})..."
+        kill -USR1 "${pid}"
+        sleep 1
+    else
+        timeout "${DHCP_TIMEOUT_SEC}" \
+            ip netns exec "${NS_CLIENT}" \
+            "${UDHCPC_BIN:-udhcpc}" \
+            -f \
+            -q \
+            -n \
+            -i "${NS_CLIENT_IF}" \
+            -s "${udhcpc_script}"
+    fi
 }
 
 main() {
@@ -78,37 +84,39 @@ main() {
     require_command timeout
 
     validate_namespace_ready "${NS_CLIENT}" "${NS_CLIENT_IF}"
-    clear_client_address
+
+    local initial_ip
+    initial_ip="$(get_client_ipv4 || true)"
+    [[ -n "${initial_ip}" ]] || die "Client has no active IPv4 address. Run client_request.sh first."
+
+    log_info "Current active client IP before renew: ${initial_ip}"
 
     local client
-    local leased_ip
-
     client="$(select_client)"
-    log_info "Using DHCP client: ${client}"
+    log_info "Using DHCP client for renewal: ${client}"
 
     case "${client}" in
-        dhclient) run_dhclient ;;
-        udhcpc) run_udhcpc ;;
+        dhclient) renew_dhclient ;;
+        udhcpc) renew_udhcpc ;;
     esac
 
-    leased_ip="$(get_client_ipv4 || true)"
-    local pool_matched=0
-    if ipv4_in_range "${leased_ip}" "${CLIENT_POOL_START}" "${CLIENT_POOL_END}"; then
-        pool_matched=1
-    elif [[ -n "${CLIENT2_POOL_START:-}" && -n "${CLIENT2_POOL_END:-}" ]] &&
-         ipv4_in_range "${leased_ip}" "${CLIENT2_POOL_START}" "${CLIENT2_POOL_END}"; then
-        pool_matched=1
+    local renewed_ip
+    renewed_ip="$(get_client_ipv4 || true)"
+    [[ -n "${renewed_ip}" ]] || die "Client lost IPv4 address after renew attempt."
+
+    if [[ "${renewed_ip}" != "${initial_ip}" ]]; then
+        log_warn "Lease IP changed from ${initial_ip} to ${renewed_ip}."
+    else
+        log_info "Lease IP successfully maintained: ${renewed_ip}"
     fi
 
-    if (( pool_matched == 0 )); then
-        die "Unexpected lease ${leased_ip}; expected ${CLIENT_POOL_START}..${CLIENT_POOL_END} or ${CLIENT2_POOL_START:-}..${CLIENT2_POOL_END:-}"
-    fi
-
-    cat >"${STATE_DIR}/client_lease.env" <<EOF
-CLIENT_LEASE_IP='${leased_ip}'
+    cat >"${STATE_DIR}/client_renew.env" <<EOF
+INITIAL_LEASE_IP='${initial_ip}'
+RENEWED_LEASE_IP='${renewed_ip}'
+RENEW_TIMESTAMP='$(date +%Y%m%d_%H%M%S)'
 EOF
 
-    log_info "Client lease acquired: ${leased_ip}"
+    log_info "DHCP Renew completed successfully."
 }
 
 main "$@"

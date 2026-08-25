@@ -193,10 +193,16 @@ Start captures:
 sudo ./scripts/capture.sh start
 ```
 
-Request a lease:
+Request initial lease:
 
 ```bash
 sudo ./scripts/client_request.sh
+```
+
+Validate DHCP Renew (Lease Renewal):
+
+```bash
+sudo ./scripts/client_renew.sh
 ```
 
 Inspect state:
@@ -211,10 +217,11 @@ Stop capture:
 sudo ./scripts/capture.sh stop
 ```
 
-Verify the latest captures:
+Verify the latest captures (Initial Relay & Renewal):
 
 ```bash
 sudo ./scripts/verify_capture.sh
+sudo ./scripts/verify_renew.sh
 ```
 
 ## Automated Scenario

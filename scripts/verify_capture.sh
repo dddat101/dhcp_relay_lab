@@ -70,22 +70,32 @@ main() {
         -e "${giaddr_field}"
 
     local match
+    local matched_giaddr=""
+
     match="$(
         tshark -r "${LAST_SERVER_PCAP}" \
-            -Y "${giaddr_field} == ${DUT_LAN_IP} && ${hops_field} == ${EXPECTED_RELAY_HOPS}" \
+            -Y "(${giaddr_field} == ${DUT_LAN_IP} || ${giaddr_field} == ${DUT_LAN2_IP:-192.168.2.1}) && ${hops_field} == ${EXPECTED_RELAY_HOPS}" \
             -T fields \
             -e frame.number |
             head -n 1
     )"
 
     if [[ -z "${match}" ]]; then
-        printf '[FAIL] No server-facing DHCP packet matched giaddr=%s hops=%s\n' \
-            "${DUT_LAN_IP}" "${EXPECTED_RELAY_HOPS}"
+        printf '[FAIL] No server-facing DHCP packet matched giaddr=%s (or %s) hops=%s\n' \
+            "${DUT_LAN_IP}" "${DUT_LAN2_IP:-192.168.2.1}" "${EXPECTED_RELAY_HOPS}"
         exit 1
     fi
 
+    matched_giaddr="$(
+        tshark -r "${LAST_SERVER_PCAP}" \
+            -Y "frame.number == ${match}" \
+            -T fields \
+            -e "${giaddr_field}" |
+            head -n 1
+    )"
+
     printf '[PASS] Relay packet found: frame=%s giaddr=%s hops=%s\n' \
-        "${match}" "${DUT_LAN_IP}" "${EXPECTED_RELAY_HOPS}"
+        "${match}" "${matched_giaddr}" "${EXPECTED_RELAY_HOPS}"
 
     printf '\n== LAN-side DHCP packets ==\n'
     tshark -r "${LAST_LAN_PCAP}" \
