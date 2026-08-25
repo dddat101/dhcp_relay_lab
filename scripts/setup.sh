@@ -64,17 +64,24 @@ dhcp-range=set:wan,${WAN_POOL_START:-172.20.0.20},${WAN_POOL_END:-172.20.0.50},$
 dhcp-option=tag:wan,option:dns-server,${DHCP_DNS_IP}
 
 # ------------------------------------------------------------------------------
-# Pool 2: Remote LAN Subnet (for LAN Clients via DHCP Relay)
+# Pool 2: Remote LAN1 Subnet (192.168.1.0/24 via DHCP Relay giaddr 192.168.1.1)
 # ------------------------------------------------------------------------------
-dhcp-range=set:lan,${CLIENT_POOL_START},${CLIENT_POOL_END},${CLIENT_NETMASK},${DHCP_LEASE_TIME}s
-dhcp-option=tag:lan,option:router,${DUT_LAN_IP}
-dhcp-option=tag:lan,option:dns-server,${DHCP_DNS_IP}
+dhcp-range=set:lan1,${CLIENT_POOL_START},${CLIENT_POOL_END},${CLIENT_NETMASK},${DHCP_LEASE_TIME}s
+dhcp-option=tag:lan1,option:router,${DUT_LAN_IP}
+dhcp-option=tag:lan1,option:dns-server,${DHCP_DNS_IP}
+
+# ------------------------------------------------------------------------------
+# Pool 3: Remote LAN2 Subnet (192.168.2.0/24 via DHCP Relay giaddr 192.168.2.1)
+# ------------------------------------------------------------------------------
+dhcp-range=set:lan2,${CLIENT2_POOL_START:-192.168.2.100},${CLIENT2_POOL_END:-192.168.2.150},${CLIENT2_NETMASK:-255.255.255.0},${DHCP_LEASE_TIME}s
+dhcp-option=tag:lan2,option:router,${DUT_LAN2_IP:-192.168.2.1}
+dhcp-option=tag:lan2,option:dns-server,${DHCP_DNS_IP}
 
 dhcp-leasefile=${STATE_DIR}/dnsmasq.leases
 log-facility=${STATE_DIR}/dnsmasq.log
 EOF
 
-    log_info "Generated DHCP server config with dual pools (WAN & LAN Relay): ${conf}"
+    log_info "Generated DHCP server config (WAN, LAN1, LAN2 pools): ${conf}"
 }
 
 generate_and_start_relay_agent() {
@@ -161,8 +168,9 @@ setup_virtual() {
     ip -n "${NS_SERVER}" addr flush dev "${NS_SERVER_IF}" 2>/dev/null || true
     ip -n "${NS_SERVER}" addr add "${SERVER_IP}/${SERVER_PREFIX}" dev "${NS_SERVER_IF}"
     ip -n "${NS_SERVER}" link set dev "${NS_SERVER_IF}" up
-    # Add return route for client subnet via Relay WAN
+    # Add return routes for client subnets via Relay WAN
     ip -n "${NS_SERVER}" route add "${CLIENT_SUBNET}/${CLIENT_PREFIX}" via "${DUT_WAN_IP}" dev "${NS_SERVER_IF}" 2>/dev/null || true
+    ip -n "${NS_SERVER}" route add "${CLIENT2_SUBNET:-192.168.2.0}/${CLIENT2_PREFIX:-24}" via "${DUT_WAN_IP}" dev "${NS_SERVER_IF}" 2>/dev/null || true
 
     # Configure Relay namespace (Simulated DUT)
     log_info "Configuring ${relay_ns} (Relay LAN: ${DUT_LAN_IP}/${CLIENT_PREFIX}, WAN: ${DUT_WAN_IP}/${SERVER_PREFIX})."
@@ -264,8 +272,9 @@ setup_physical() {
     ip -n "${NS_SERVER}" addr flush dev "${NS_SERVER_IF}" 2>/dev/null || true
     ip -n "${NS_SERVER}" addr add "${SERVER_IP}/${SERVER_PREFIX}" dev "${NS_SERVER_IF}"
     ip -n "${NS_SERVER}" link set dev "${NS_SERVER_IF}" up
-    # Add return route for client subnet via server interface
+    # Add return routes for client subnets via server interface
     ip -n "${NS_SERVER}" route add "${CLIENT_SUBNET}/${CLIENT_PREFIX}" dev "${NS_SERVER_IF}" 2>/dev/null || true
+    ip -n "${NS_SERVER}" route add "${CLIENT2_SUBNET:-192.168.2.0}/${CLIENT2_PREFIX:-24}" dev "${NS_SERVER_IF}" 2>/dev/null || true
 
     # Generate DHCP server configuration
     generate_dnsmasq_config
@@ -289,17 +298,16 @@ EOF
     printf '  LAN Client:\n'
     printf '    Namespace:        %s\n' "${NS_CLIENT}"
     printf '    Interface:        %s (%s -> %s)\n' "${NS_CLIENT_IF}" "${LAN_TEST_IF}" "${NS_CLIENT_IF}"
-    printf '    Subnet:           %s/%s\n' "${CLIENT_SUBNET}" "${CLIENT_PREFIX}"
-    printf '    Expected Pool:    %s - %s\n' "${CLIENT_POOL_START}" "${CLIENT_POOL_END}"
-    printf '    Default Gateway:  %s (DUT LAN IP)\n' "${DUT_LAN_IP}"
+    printf '    Subnet 1:         %s/%s (Pool: %s - %s, GW: %s)\n' "${CLIENT_SUBNET}" "${CLIENT_PREFIX}" "${CLIENT_POOL_START}" "${CLIENT_POOL_END}" "${DUT_LAN_IP}"
+    printf '    Subnet 2:         %s/%s (Pool: %s - %s, GW: %s)\n' "${CLIENT2_SUBNET:-192.168.2.0}" "${CLIENT2_PREFIX:-24}" "${CLIENT2_POOL_START:-192.168.2.100}" "${CLIENT2_POOL_END:-192.168.2.150}" "${DUT_LAN2_IP:-192.168.2.1}"
     printf '\n  DHCP Server:\n'
     printf '    Namespace:        %s\n' "${NS_SERVER}"
     printf '    Interface:        %s (%s -> %s)\n' "${NS_SERVER_IF}" "${SRV_TEST_IF}" "${NS_SERVER_IF}"
     printf '    Server IP:        %s/%s\n' "${SERVER_IP}" "${SERVER_PREFIX}"
-    printf '    DUT WAN IP:       %s\n' "${DUT_WAN_IP}"
+    printf '    DUT WAN IP/Pool:  %s (Pool: %s - %s)\n' "${DUT_WAN_IP}" "${WAN_POOL_START:-172.20.0.20}" "${WAN_POOL_END:-172.20.0.50}"
     printf '\n  DUT Configuration Checklist:\n'
-    printf '    1. Set DUT LAN IP to:          %s/%s\n' "${DUT_LAN_IP}" "${CLIENT_PREFIX}"
-    printf '    2. Set DUT WAN IP to:          %s/%s\n' "${DUT_WAN_IP}" "${SERVER_PREFIX}"
+    printf '    1. Set DUT LAN IP to:          %s/%s (and/or %s/%s)\n' "${DUT_LAN_IP}" "${CLIENT_PREFIX}" "${DUT_LAN2_IP:-192.168.2.1}" "${CLIENT2_PREFIX:-24}"
+    printf '    2. Set DUT WAN IP to:          DHCP (or Static %s/%s)\n' "${DUT_WAN_IP}" "${SERVER_PREFIX}"
     printf '    3. Enable DHCP Relay on DUT LAN pointing to upstream server: %s\n' "${SERVER_IP}"
     printf '\n  Recommended commands:\n'
     printf '    sudo ./scripts/server.sh start\n'
