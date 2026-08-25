@@ -158,26 +158,54 @@ DUT_RELAY_DISABLE_CMD='...'
 RUN_DUT_CONFIG="1"
 ```
 
-## Packet Flow
+## DHCP Relay Protocol & Packet Flow (DORA)
 
-```text
-1. ns-lan1 -> DUT
-   DHCPDISCOVER UDP 68 -> 67, broadcast
+### Sequence Diagram
 
-2. DUT -> ns-srv
-   Relay request UDP 67 -> 67
-   giaddr = 10.10.0.1
-   hops = 1
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Client as DHCP Client (ns-lan1)
+    participant Relay as DUT / DHCP Relay
+    participant Server as Upstream DHCP Server (ns-srv)
 
-3. ns-srv -> DUT
-   DHCPOFFER / DHCPACK UDP 67 -> 67
+    Note over Client,Server: === PHASE 1: DHCP DISCOVER ===
 
-4. DUT -> ns-lan1
-   DHCPOFFER / DHCPACK UDP 67 -> 68
+    Client->>Relay: [L2 Broadcast] DHCPDISCOVER<br/>IP: 0.0.0.0:68 -> 255.255.255.255:67<br/>ciaddr: 0.0.0.0, giaddr: 0.0.0.0, hops: 0
+    Note over Relay: 1. Catch broadcast on LAN<br/>2. Set giaddr = DUT LAN IP<br/>3. Increment hops = 1<br/>4. Unicast forward to Server
+    Relay->>Server: [L3 Unicast] DHCPDISCOVER<br/>IP: DUT_WAN_IP:67 -> SERVER_IP:67<br/>ciaddr: 0.0.0.0, giaddr: DUT_LAN_IP, hops: 1
 
-5. ns-lan1
-   installs the leased 10.10.0.x/24 address
+    Note over Client,Server: === PHASE 2: DHCP OFFER ===
+
+    Note over Server: 1. Match giaddr to remote pool<br/>2. Allocate yiaddr (Client IP)<br/>3. Send unicast reply to Relay
+    Server->>Relay: [L3 Unicast] DHCPOFFER<br/>IP: SERVER_IP:67 -> DUT_WAN_IP:67<br/>yiaddr: Leased_IP, giaddr: DUT_LAN_IP
+    Note over Relay: 1. Receive Offer on WAN<br/>2. Forward Offer to LAN Client
+    Relay->>Client: [L2 Broadcast / Unicast] DHCPOFFER<br/>IP: DUT_LAN_IP:67 -> 255.255.255.255:68<br/>yiaddr: Leased_IP, Router: DUT_LAN_IP, DNS: DHCP_DNS_IP
+
+    Note over Client,Server: === PHASE 3: DHCP REQUEST ===
+
+    Client->>Relay: [L2 Broadcast] DHCPREQUEST<br/>IP: 0.0.0.0:68 -> 255.255.255.255:67<br/>Option 50: Requested IP, Option 54: Server ID
+    Note over Relay: Set giaddr = DUT LAN IP, hops = 1<br/>Unicast forward to Server
+    Relay->>Server: [L3 Unicast] DHCPREQUEST<br/>IP: DUT_WAN_IP:67 -> SERVER_IP:67<br/>Requested IP: Leased_IP, giaddr: DUT_LAN_IP, hops: 1
+
+    Note over Client,Server: === PHASE 4: DHCP ACK ===
+
+    Note over Server: 1. Commit lease<br/>2. Send ACK to Relay
+    Server->>Relay: [L3 Unicast] DHCPACK<br/>IP: SERVER_IP:67 -> DUT_WAN_IP:67<br/>yiaddr: Leased_IP, Lease Time, Timers (T1, T2)
+    Note over Relay: Forward ACK to LAN Client
+    Relay->>Client: [L2 Broadcast / Unicast] DHCPACK<br/>IP: DUT_LAN_IP:67 -> 255.255.255.255:68<br/>yiaddr: Leased_IP, Mask, Router, DNS
+    Note over Client: Client enters BOUND state and configures interface IP
 ```
+
+### Packet Field Transformations
+
+| Step | LAN Link (Client <-> Relay) | WAN Link (Relay <-> Server) | Key RFC 2131 Fields |
+|---|---|---|---|
+| **1. DISCOVER** | **L2 Broadcast** (`255.255.255.255:67`), `giaddr = 0.0.0.0`, `hops = 0` | **L3 Unicast** (`SERVER_IP:67`), `giaddr = DUT_LAN_IP`, `hops = 1` | Server inspects `giaddr` to select the client subnet pool. |
+| **2. OFFER** | **L2 Broadcast / Unicast** (`255.255.255.255:68` or Client MAC) | **L3 Unicast** (`DUT_WAN_IP:67`), `yiaddr = Leased_IP` | `yiaddr` carries the proposed client address. |
+| **3. REQUEST** | **L2 Broadcast** (`255.255.255.255:67`), `giaddr = 0.0.0.0` | **L3 Unicast** (`SERVER_IP:67`), `giaddr = DUT_LAN_IP` | Client formally requests the offered IP and identifies Server. |
+| **4. ACK** | **L2 Broadcast / Unicast** (`255.255.255.255:68` or Client MAC) | **L3 Unicast** (`DUT_WAN_IP:67`), `yiaddr = Leased_IP` | Final confirmation binding client to the leased IP. |
+
 
 ## Manual Test Commands
 
